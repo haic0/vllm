@@ -2,8 +2,11 @@
 ARG REMOTE_VLLM="0"
 ARG COMMON_WORKDIR=/app
 ARG BASE_IMAGE=rocm/vllm-dev:base
+
 # AMD NIC backend
 ARG NIC_BACKEND=none
+# Broadcom bnxt apt repo settings
+ARG RDMA_CORE_VERSION=60.0			
 # AMD AINIC apt repo settings
 ARG AINIC_VERSION=1.117.5
 ARG UBUNTU_CODENAME=jammy
@@ -200,6 +203,7 @@ ARG ROCSHMEM_REPO="https://github.com/ROCm/rocm-systems.git"
 ARG DEEPEP_BRANCH="e84464ec"
 ARG DEEPEP_REPO="https://github.com/ROCm/DeepEP.git"
 ARG DEEPEP_NIC="cx7"
+ARG DEEPEP_ROCM_ARCH="gfx942;gfx950"
 ENV ROCSHMEM_DIR=/opt/rocshmem
 
 RUN git clone ${ROCSHMEM_REPO} \
@@ -228,6 +232,7 @@ FROM base AS mori_base
 ARG NIC_BACKEND
 ARG AINIC_VERSION
 ARG UBUNTU_CODENAME
+ARG RDMA_CORE_VERSION		 
 RUN /bin/bash -lc 'set -euo pipefail; \
  echo "[MORI] Install MoRI proxy deps"; \
  pip install --quiet --ignore-installed blinker && \
@@ -253,12 +258,35 @@ RUN /bin/bash -lc 'set -euo pipefail; \
       ; \
       rm -rf /var/lib/apt/lists/*; \
       ;; \
-    # TODO: Add Broadcom bnxt packages/repos here later.
-    # bnxt) \
-    #   echo "[MORI] Add Broadcom bnxt packages/repos here later."; \
-    #   ;; \
-    *) \
-      echo "ERROR: unknown NIC_BACKEND=${NIC_BACKEND}. Use one of: none, ainic"; \
+    # Add Broadcom bnxt packages/repos here.
+	bnxt) \
+      apt-get update && apt-get install -y --no-install-recommends \
+        cmake \
+        ninja-build \
+        libudev-dev \
+        libnl-3-dev \
+        libnl-route-3-dev \
+        pkg-config \
+        python3-docutils \
+        pandoc \
+        ibverbs-utils \
+      && rm -rf /var/lib/apt/lists/*; \
+      git clone --branch v${RDMA_CORE_VERSION} --depth 1 \
+        https://github.com/linux-rdma/rdma-core.git /tmp/rdma-core; \
+      cmake -GNinja \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DNO_MAN_PAGES=1 \
+        -DNO_PYVERBS=1 \
+        -B/tmp/rdma-core/build \
+        /tmp/rdma-core; \
+      ninja -C /tmp/rdma-core/build install; \
+      ldconfig; \
+      rm -rf /tmp/rdma-core; \
+      ;; \
+	*) \
+    #echo "[MORI] Add Broadcom bnxt #packages/repos here."; \
+      echo "ERROR: unknown NIC_BACKEND=${NIC_BACKEND}. Use one of: none, ainic, bnxt"; \
       exit 2; \
       ;; \
   esac;'
@@ -415,6 +443,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system hf_transfer
 ENV HF_HUB_ENABLE_HF_TRANSFER=1
 
+							  
+
+																								 
 # install audio decode package `torchcodec` from source (required due to 
 # ROCm and torch version mismatch) for tests with datasets package
 COPY tools/install_torchcodec_rocm.sh /tmp/install_torchcodec.sh
@@ -494,6 +525,7 @@ ARG COMMON_WORKDIR
 ARG BASE_IMAGE
 ARG NIC_BACKEND
 ARG AINIC_VERSION
+ARG RDMA_CORE_VERSION
 
 # Copy over the benchmark scripts as well
 COPY --from=export_vllm /benchmarks ${COMMON_WORKDIR}/vllm/benchmarks
@@ -514,6 +546,7 @@ ENV KINETO_CONFIG="${COMMON_WORKDIR}/libkineto.conf"
 RUN echo "VLLM_BASE_IMAGE=${BASE_IMAGE}" >> ${COMMON_WORKDIR}/versions.txt \
     && echo "MORI_NIC_BACKEND=${NIC_BACKEND}" >> ${COMMON_WORKDIR}/versions.txt \
     && echo "AINIC_VERSION=${AINIC_VERSION}" >> ${COMMON_WORKDIR}/versions.txt
+	&& echo "RDMA_CORE_VERSION=${RDMA_CORE_VERSION}" >> ${COMMON_WORKDIR}/versions.txt
 
 CMD ["/bin/bash"]
 
